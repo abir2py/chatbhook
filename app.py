@@ -5,6 +5,7 @@
 
 from flask import Flask, request, jsonify, render_template_string
 import datetime
+import bcrypt
 import json
 
 # Initialize the Flask application
@@ -12,10 +13,10 @@ app = Flask(__name__)
 
 # Hardcoded groups with passwords
 GROUPS = {
-    "friends": "pass123",
-    "family": "fam321",
-    "work": "office456",
-    "gaming": "ggwp",
+    "friends": "$2b$12$VjDjD89wDO6suFTcA6yF7OVtK1eolxSR39n4wGQEK6jgY.0BKe.Hq",
+    "family": "$2b$12$Us2ERFfYOsiWDKetbmNXjun9JLIo1PU1TxGkErZo5vpgtc.ibfLvS",
+    "work": "$2b$12$qT0mZNQYkbB3lIzQ2dk8CO5fP7wdsKpb1nocTtmKGHBFlBKRIbUEW",
+    "gaming": "$2b$12$c6657YRENwKCVcCS06ALwuQB9o5Zk90rAXXcr6s4zIMQC3RFrZRtK",
 }
 
 # Messages stored per group (in-memory). Start each group with a welcome message.
@@ -433,11 +434,13 @@ def index():
 
 @app.route('/check_group', methods=['GET'])
 def check_group():
-    """Verify group name and password (hardcoded)."""
+    """Verify group name and password using bcrypt hashes."""
     name = request.args.get('name', '')
     password = request.args.get('password', '')
-    if name in GROUPS and GROUPS[name] == password:
+
+    if name in GROUPS and bcrypt.checkpw(password.encode(), GROUPS[name].encode()):
         return jsonify({'status': 'success'})
+
     return jsonify({'status': 'error', 'message': 'Invalid group or password'}), 401
 
 @app.route('/messages', methods=['GET'])

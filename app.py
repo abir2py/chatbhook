@@ -1,21 +1,33 @@
 # app.py
 # A real-time chat server using Flask with support for Emojis and GIFs from Tenor.
+# Added: group chat support with hardcoded passwords (join a group by entering its password).
+# Messages are stored per-group in memory.
 
 from flask import Flask, request, jsonify, render_template_string
 import datetime
+import json
 
 # Initialize the Flask application
 app = Flask(__name__)
 
-# In-memory "database" to store messages.
-messages = []
+# Hardcoded groups with passwords
+GROUPS = {
+    "friends": "pass123",
+    "family": "fam321",
+    "work": "office456",
+    "gaming": "ggwp",
+}
 
-# Add a welcome message
-messages.append({
-    'username': 'ChatBot',
-    'text': 'bhook++',
-    'timestamp': datetime.datetime.now().strftime('%H:%M')
-})
+# Messages stored per group (in-memory). Start each group with a welcome message.
+messages = {}
+for g in GROUPS:
+    messages[g] = [
+        {
+            'username': 'ChatBot',
+            'text': f'Welcome to the {g} group! Say hi 👋',
+            'timestamp': datetime.datetime.now().strftime('%H:%M')
+        }
+    ]
 
 # The HTML template for the chat frontend.
 HTML_TEMPLATE = """
@@ -57,11 +69,36 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <!-- Group Selection Screen (shown after login) -->
+    <div id="group-screen" class="hidden flex items-center justify-center h-screen">
+        <div class="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-md w-full max-w-md">
+            <h2 class="text-2xl font-bold mb-4 text-center text-blue-600 dark:text-blue-400">Select a Group</h2>
+            <p class="text-sm text-gray-500 dark:text-gray-400 mb-4 text-center">Available groups are pre-defined and require a password to join.</p>
+            <form id="group-form" class="space-y-4">
+                <div>
+                    <label for="group-select" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Choose group</label>
+                    <select id="group-select" class="w-full p-3 bg-gray-200 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <!-- options populated by JS -->
+                    </select>
+                </div>
+                <div>
+                    <label for="group-pass-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Group Password</label>
+                    <input type="password" id="group-pass-input" class="w-full p-3 bg-gray-200 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required autocomplete="off">
+                </div>
+                <div class="flex space-x-2">
+                    <button type="submit" class="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300 shadow-md">Join Group</button>
+                    <button id="cancel-to-login" type="button" class="flex-1 bg-gray-400 hover:bg-gray-500 text-white font-bold py-3 px-4 rounded-lg transition duration-300">Back</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- Chat Screen (Initially Hidden) -->
     <div id="chat-screen" class="hidden flex-col h-screen max-w-2xl mx-auto p-4">
         <header class="mb-4 text-center">
             <h1 class="text-3xl font-bold text-blue-600 dark:text-blue-400">Local Network Chat</h1>
             <p id="welcome-message" class="text-sm text-gray-500 dark:text-gray-400">Welcome, ...</p>
+            <p id="current-group" class="text-xs text-gray-400 dark:text-gray-500">Group: ...</p>
         </header>
 
         <div id="messages" class="flex-1 bg-white dark:bg-gray-800 rounded-lg shadow-md p-4 overflow-y-auto mb-4 space-y-4"></div>
@@ -97,17 +134,28 @@ HTML_TEMPLATE = """
 
     <script>
         // --- Tenor API Configuration ---
-        // IMPORTANT: Replace with your actual key from Google Cloud Console.
+        // IMPORTANT: Replace with your actual key to enable GIFs.
         const TENOR_API_KEY = ""; 
         const TENOR_CLIENT_KEY = "my-local-chat-app"; // A key for your app to identify itself to Tenor
 
+        // Injected group list from server
+        const GROUPS = {{ groups | tojson }};
+
         // DOM Elements
         const loginScreen = document.getElementById('login-screen');
+        const groupScreen = document.getElementById('group-screen');
         const chatScreen = document.getElementById('chat-screen');
+
         const loginForm = document.getElementById('login-form');
         const usernameInput = document.getElementById('username-input');
         const welcomeMessage = document.getElementById('welcome-message');
-        
+        const currentGroupLabel = document.getElementById('current-group');
+
+        const groupForm = document.getElementById('group-form');
+        const groupSelect = document.getElementById('group-select');
+        const groupPassInput = document.getElementById('group-pass-input');
+        const cancelToLogin = document.getElementById('cancel-to-login');
+
         const messagesContainer = document.getElementById('messages');
         const messageForm = document.getElementById('message-form');
         const messageInput = document.getElementById('message-input');
@@ -123,6 +171,19 @@ HTML_TEMPLATE = """
         const gifResults = document.getElementById('gif-results');
         
         let username = '';
+        let currentGroup = '';
+
+        // Populate group dropdown
+        function populateGroups() {
+            groupSelect.innerHTML = '';
+            Object.keys(GROUPS).forEach(g => {
+                const opt = document.createElement('option');
+                opt.value = g;
+                opt.textContent = g;
+                groupSelect.appendChild(opt);
+            });
+        }
+        populateGroups();
 
         // --- Login Logic ---
         loginForm.addEventListener('submit', (event) => {
@@ -131,26 +192,87 @@ HTML_TEMPLATE = """
             if (enteredUsername) {
                 username = enteredUsername;
                 welcomeMessage.textContent = `Welcome, ${username}!`;
+                // Hide login, show group selection
                 loginScreen.classList.add('hidden');
-                chatScreen.classList.remove('hidden');
-                chatScreen.classList.add('flex');
-                initializeChat();
+                groupScreen.classList.remove('hidden');
+            }
+        });
+
+        cancelToLogin.addEventListener('click', () => {
+            // go back to login
+            groupScreen.classList.add('hidden');
+            loginScreen.classList.remove('hidden');
+        });
+
+        // --- Group Join Logic ---
+        groupForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const selectedGroup = groupSelect.value;
+            const password = groupPassInput.value;
+
+            if (!selectedGroup) {
+                alert('Please select a group.');
+                return;
+            }
+
+            try {
+                const res = await fetch(`/check_group?name=${encodeURIComponent(selectedGroup)}&password=${encodeURIComponent(password)}`);
+                if (!res.ok) throw new Error('Invalid group or password');
+                const data = await res.json();
+                if (data.status === 'success') {
+                    currentGroup = selectedGroup;
+                    currentGroupLabel.textContent = `Group: ${currentGroup}`;
+                    groupScreen.classList.add('hidden');
+                    chatScreen.classList.remove('hidden');
+                    chatScreen.classList.add('flex');
+                    initializeChat();
+                } else {
+                    alert('Invalid group or password');
+                }
+            } catch (err) {
+                alert('Invalid group or password');
+                console.error('Group join error:', err);
             }
         });
 
         // --- Chat Logic ---
         function initializeChat() {
+            // Remove previous handlers (if any) to avoid double-binding
+            messageForm.removeEventListener('submit', handleFormSubmit);
             messageForm.addEventListener('submit', handleFormSubmit);
-            emojiBtn.addEventListener('click', () => emojiPickerContainer.classList.toggle('hidden'));
-            emojiPicker.addEventListener('emoji-click', event => messageInput.value += event.detail.unicode);
-            gifBtn.addEventListener('click', openGifModal);
-            gifModalClose.addEventListener('click', () => gifModal.classList.add('hidden'));
-            gifSearchInput.addEventListener('keyup', event => {
-                if (event.key === 'Enter') searchGifs();
-            });
 
-            setInterval(fetchMessages, 2000);
+            emojiBtn.removeEventListener('click', toggleEmoji);
+            emojiBtn.addEventListener('click', toggleEmoji);
+
+            if (emojiPicker) {
+                emojiPicker.removeEventListener('emoji-click', onEmojiClick);
+                emojiPicker.addEventListener('emoji-click', onEmojiClick);
+            }
+
+            gifBtn.removeEventListener('click', openGifModal);
+            gifBtn.addEventListener('click', openGifModal);
+            gifModalClose.removeEventListener('click', () => gifModal.classList.add('hidden'));
+            gifModalClose.addEventListener('click', () => gifModal.classList.add('hidden'));
+
+            gifSearchInput.removeEventListener('keyup', onGifSearchKey);
+            gifSearchInput.addEventListener('keyup', onGifSearchKey);
+
+            // start polling for messages
+            if (window._chatPoller) clearInterval(window._chatPoller);
             fetchMessages().then(scrollToBottom);
+            window._chatPoller = setInterval(fetchMessages, 2000);
+        }
+
+        function toggleEmoji() {
+            emojiPickerContainer.classList.toggle('hidden');
+        }
+
+        function onEmojiClick(event) {
+            messageInput.value += event.detail.unicode;
+        }
+
+        function onGifSearchKey(event) {
+            if (event.key === 'Enter') searchGifs();
         }
 
         function scrollToBottom() {
@@ -159,13 +281,14 @@ HTML_TEMPLATE = """
 
         // --- Message Rendering ---
         function isGifUrl(text) {
-            // Updated to check for Tenor URLs
-            return text.startsWith('https://media.tenor.com/');
+            // Accept Tenor gif urls or any url that ends with common image/gif patterns:
+            return text.startsWith('https://media.tenor.com/') || text.includes('/media/') || text.endsWith('.gif') || text.includes('tenor.googleapis.com');
         }
 
         async function fetchMessages() {
+            if (!currentGroup) return;
             try {
-                const response = await fetch('/messages');
+                const response = await fetch(`/messages?group=${encodeURIComponent(currentGroup)}`);
                 if (!response.ok) throw new Error('Network response was not ok');
                 const messages = await response.json();
                 
@@ -220,7 +343,11 @@ HTML_TEMPLATE = """
         }
 
         async function sendMessage(text) {
-            const message = { username: username, text: text };
+            if (!currentGroup) {
+                alert('No group selected.');
+                return;
+            }
+            const message = { username: username, text: text, group: currentGroup };
             try {
                 const response = await fetch('/messages', {
                     method: 'POST',
@@ -238,9 +365,9 @@ HTML_TEMPLATE = """
             }
         }
 
-        // --- GIF Modal Logic (Updated for Tenor) ---
+        // --- GIF Modal Logic (Tenor) ---
         function openGifModal() {
-            if (TENOR_API_KEY === "YOUR_TENOR_API_KEY") {
+            if (!TENOR_API_KEY) {
                 alert("Please set your Tenor API key in the script to enable GIFs.");
                 return;
             }
@@ -272,13 +399,14 @@ HTML_TEMPLATE = """
                 const result = await response.json();
                 
                 gifResults.innerHTML = '';
-                // The structure of the Tenor response is different from GIPHY's
-                result.results.forEach(gif => {
+                // The structure of the Tenor response (v2) typically includes result.media_formats.gif.url
+                (result.results || []).forEach(gif => {
                     const gifItem = document.createElement('div');
                     gifItem.className = 'gif-item bg-gray-700 rounded-lg overflow-hidden';
-                    // The URL path is also different
-                    gifItem.innerHTML = `<img src="${gif.media_formats.gif.url}" alt="${gif.content_description}" class="w-full h-full object-cover">`;
-                    gifItem.onclick = () => selectGif(gif.media_formats.gif.url);
+                    const url = gif?.media_formats?.gif?.url || (gif?.media && gif.media[0] && gif.media[0].gif && gif.media[0].gif.url) || '';
+                    const desc = gif?.content_description || gif?.id || 'GIF';
+                    gifItem.innerHTML = `<img src="${url}" alt="${desc}" class="w-full h-full object-cover">`;
+                    gifItem.onclick = () => selectGif(url);
                     gifResults.appendChild(gifItem);
                 });
             } catch (error) {
@@ -288,6 +416,7 @@ HTML_TEMPLATE = """
         }
 
         function selectGif(gifUrl) {
+            if (!gifUrl) return;
             sendMessage(gifUrl);
             gifModal.classList.add('hidden');
             gifSearchInput.value = '';
@@ -299,27 +428,43 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    """Serves the main HTML page."""
-    return render_template_string(HTML_TEMPLATE)
+    """Serves the main HTML page and injects the group list."""
+    return render_template_string(HTML_TEMPLATE, groups=GROUPS)
+
+@app.route('/check_group', methods=['GET'])
+def check_group():
+    """Verify group name and password (hardcoded)."""
+    name = request.args.get('name', '')
+    password = request.args.get('password', '')
+    if name in GROUPS and GROUPS[name] == password:
+        return jsonify({'status': 'success'})
+    return jsonify({'status': 'error', 'message': 'Invalid group or password'}), 401
 
 @app.route('/messages', methods=['GET'])
 def get_messages():
-    """Returns all chat messages in JSON format."""
-    return jsonify(messages)
+    """Returns all chat messages for a specific group in JSON format."""
+    group = request.args.get('group')
+    if not group or group not in messages:
+        return jsonify({'status': 'error', 'message': 'Invalid or missing group parameter'}), 400
+    return jsonify(messages[group])
 
 @app.route('/messages', methods=['POST'])
 def post_message():
-    """Receives a new message and adds it to our list."""
+    """Receives a new message and adds it to the group's list."""
     data = request.get_json()
-    if not data or 'username' not in data or 'text' not in data:
+    if not data or 'username' not in data or 'text' not in data or 'group' not in data:
         return jsonify({'status': 'error', 'message': 'Invalid data'}), 400
+
+    group = data['group']
+    if group not in messages:
+        return jsonify({'status': 'error', 'message': 'Invalid group'}), 400
 
     message = {
         'username': data['username'],
         'text': data['text'],
         'timestamp': datetime.datetime.now().strftime('%H:%M')
     }
-    messages.append(message)
+    messages[group].append(message)
     return jsonify({'status': 'success'}), 201
 
 if __name__ == '__main__':

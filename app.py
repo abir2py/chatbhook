@@ -2,6 +2,7 @@
 # A real-time chat server using Flask with support for Emojis and GIFs from Tenor.
 # Added: group chat support with hardcoded passwords (join a group by entering its password).
 # Messages are stored per-group in memory.
+# Modified: Added a button to leave the current group and return to the selection screen.
 
 from flask import Flask, request, jsonify, render_template_string
 import datetime
@@ -42,7 +43,6 @@ HTML_TEMPLATE = """
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <!-- Emoji Picker Library -->
     <script type="module" src="https://cdn.jsdelivr.net/npm/emoji-picker-element@^1/index.js"></script>
     <style>
         body { font-family: 'Inter', sans-serif; }
@@ -56,7 +56,6 @@ HTML_TEMPLATE = """
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
 
-    <!-- Login Screen -->
     <div id="login-screen" class="flex items-center justify-center h-screen">
         <div class="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-md w-full max-w-sm">
             <h2 class="text-2xl font-bold mb-6 text-center text-blue-600 dark:text-blue-400">Join the Chat</h2>
@@ -70,7 +69,6 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Group Selection Screen (shown after login) -->
     <div id="group-screen" class="hidden flex items-center justify-center h-screen">
         <div class="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-md w-full max-w-md">
             <h2 class="text-2xl font-bold mb-4 text-center text-blue-600 dark:text-blue-400">Select a Group</h2>
@@ -79,8 +77,7 @@ HTML_TEMPLATE = """
                 <div>
                     <label for="group-select" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Choose group</label>
                     <select id="group-select" class="w-full p-3 bg-gray-200 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <!-- options populated by JS -->
-                    </select>
+                        </select>
                 </div>
                 <div>
                     <label for="group-pass-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Group Password</label>
@@ -94,17 +91,18 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Chat Screen (Initially Hidden) -->
     <div id="chat-screen" class="hidden flex-col h-screen max-w-2xl mx-auto p-4">
-        <header class="mb-4 text-center">
+        <header class="mb-4 text-center relative">
             <h1 class="text-3xl font-bold text-blue-600 dark:text-blue-400">Local Network Chat</h1>
             <p id="welcome-message" class="text-sm text-gray-500 dark:text-gray-400">Welcome, ...</p>
             <p id="current-group" class="text-xs text-gray-400 dark:text-gray-500">Group: ...</p>
+            <button id="leave-group-btn" class="absolute top-0 right-0 mt-2 bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded-lg transition text-sm">
+                Change Group
+            </button>
         </header>
 
         <div id="messages" class="flex-1 bg-white dark:bg-gray-800 rounded-lg shadow-md p-4 overflow-y-auto mb-4 space-y-4"></div>
 
-        <!-- Message Input Area -->
         <div class="relative">
             <form id="message-form" class="flex items-center space-x-2">
                 <input type="text" id="message-input" placeholder="Type your message..." autocomplete="off" class="flex-1 p-3 bg-gray-200 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -122,7 +120,6 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- GIF Modal -->
     <div id="gif-modal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
         <div class="bg-gray-800 rounded-lg shadow-xl w-full max-w-lg h-3/4 flex flex-col">
             <div class="p-4 border-b border-gray-700 flex justify-between items-center">
@@ -156,6 +153,9 @@ HTML_TEMPLATE = """
         const groupSelect = document.getElementById('group-select');
         const groupPassInput = document.getElementById('group-pass-input');
         const cancelToLogin = document.getElementById('cancel-to-login');
+        
+        // NEW: Reference to the leave group button
+        const leaveGroupBtn = document.getElementById('leave-group-btn');
 
         const messagesContainer = document.getElementById('messages');
         const messageForm = document.getElementById('message-form');
@@ -234,6 +234,22 @@ HTML_TEMPLATE = """
                 alert('Invalid group or password');
                 console.error('Group join error:', err);
             }
+        });
+        
+        // NEW: Logic to leave a group
+        leaveGroupBtn.addEventListener('click', () => {
+            // Stop polling for messages
+            if (window._chatPoller) {
+                clearInterval(window._chatPoller);
+            }
+            // Reset state
+            currentGroup = '';
+            groupPassInput.value = ''; // Clear password field for convenience
+            
+            // Hide chat screen and show group selection screen
+            chatScreen.classList.add('hidden');
+            chatScreen.classList.remove('flex');
+            groupScreen.classList.remove('hidden');
         });
 
         // --- Chat Logic ---

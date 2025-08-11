@@ -1,13 +1,14 @@
 # app.py
-# A real-time chat server using Flask with support for Emojis and GIFs from Tenor.
-# Added: group chat support with hardcoded passwords (join a group by entering its password).
-# Messages are stored per-group in memory.
-# Modified: Added a button to leave the current group and return to the selection screen.
+# A real-time chat server using Flask with support for Emojis, GIFs, and ephemeral image uploads.
+# - Group chat support with hardcoded passwords.
+# - Option to go back to group selection.
+# - Image sharing via Base64 encoding (images are stored in memory and disappear on restart).
 
 from flask import Flask, request, jsonify, render_template_string
 import datetime
 import bcrypt
 import json
+import base64 # <-- Required for image encoding
 
 # Initialize the Flask application
 app = Flask(__name__)
@@ -107,6 +108,11 @@ HTML_TEMPLATE = """
             <form id="message-form" class="flex items-center space-x-2">
                 <input type="text" id="message-input" placeholder="Type your message..." autocomplete="off" class="flex-1 p-3 bg-gray-200 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
                 
+                <label for="image-upload" class="p-3 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-lg transition cursor-pointer" aria-label="Upload Image">
+                    🖼️
+                    <input type="file" id="image-upload" class="hidden" accept="image/*">
+                </label>
+                
                 <button type="button" id="emoji-btn" class="p-3 bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 rounded-lg transition">😊</button>
                 <button type="button" id="gif-btn" class="p-3 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-lg transition">GIF</button>
                 
@@ -114,6 +120,10 @@ HTML_TEMPLATE = """
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                 </button>
             </form>
+            <div id="image-preview-container" class="hidden mt-2 p-2 bg-gray-200 dark:bg-gray-700 rounded-lg flex items-center space-x-2">
+                <img id="image-preview" class="max-h-20 rounded" src="">
+                <button id="cancel-image" class="text-red-500 hover:text-red-700 font-bold">&times;</button>
+            </div>
             <div id="emoji-picker-container" class="absolute bottom-16 right-0 z-10 hidden">
                 <emoji-picker class="dark"></emoji-picker>
             </div>
@@ -132,9 +142,8 @@ HTML_TEMPLATE = """
 
     <script>
         // --- Tenor API Configuration ---
-        // IMPORTANT: Replace with your actual key to enable GIFs.
         const TENOR_API_KEY = ""; 
-        const TENOR_CLIENT_KEY = "my-local-chat-app"; // A key for your app to identify itself to Tenor
+        const TENOR_CLIENT_KEY = "my-local-chat-app"; 
 
         // Injected group list from server
         const GROUPS = {{ groups | tojson }};
@@ -153,8 +162,6 @@ HTML_TEMPLATE = """
         const groupSelect = document.getElementById('group-select');
         const groupPassInput = document.getElementById('group-pass-input');
         const cancelToLogin = document.getElementById('cancel-to-login');
-        
-        // NEW: Reference to the leave group button
         const leaveGroupBtn = document.getElementById('leave-group-btn');
 
         const messagesContainer = document.getElementById('messages');
@@ -171,10 +178,16 @@ HTML_TEMPLATE = """
         const gifSearchInput = document.getElementById('gif-search-input');
         const gifResults = document.getElementById('gif-results');
         
+        // --- NEW: Image upload elements ---
+        const imageUpload = document.getElementById('image-upload');
+        const imagePreviewContainer = document.getElementById('image-preview-container');
+        const imagePreview = document.getElementById('image-preview');
+        const cancelImage = document.getElementById('cancel-image');
+        let selectedFile = null;
+
         let username = '';
         let currentGroup = '';
 
-        // Populate group dropdown
         function populateGroups() {
             groupSelect.innerHTML = '';
             Object.keys(GROUPS).forEach(g => {
@@ -186,36 +199,40 @@ HTML_TEMPLATE = """
         }
         populateGroups();
 
-        // --- Login Logic ---
+        // --- Event Listeners ---
         loginForm.addEventListener('submit', (event) => {
             event.preventDefault();
             const enteredUsername = usernameInput.value.trim();
             if (enteredUsername) {
                 username = enteredUsername;
                 welcomeMessage.textContent = `Welcome, ${username}!`;
-                // Hide login, show group selection
                 loginScreen.classList.add('hidden');
                 groupScreen.classList.remove('hidden');
             }
         });
 
         cancelToLogin.addEventListener('click', () => {
-            // go back to login
             groupScreen.classList.add('hidden');
             loginScreen.classList.remove('hidden');
         });
 
-        // --- Group Join Logic ---
+        leaveGroupBtn.addEventListener('click', () => {
+            if (window._chatPoller) clearInterval(window._chatPoller);
+            currentGroup = '';
+            groupPassInput.value = '';
+            chatScreen.classList.add('hidden');
+            chatScreen.classList.remove('flex');
+            groupScreen.classList.remove('hidden');
+        });
+
         groupForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             const selectedGroup = groupSelect.value;
             const password = groupPassInput.value;
-
             if (!selectedGroup) {
                 alert('Please select a group.');
                 return;
             }
-
             try {
                 const res = await fetch(`/check_group?name=${encodeURIComponent(selectedGroup)}&password=${encodeURIComponent(password)}`);
                 if (!res.ok) throw new Error('Invalid group or password');
@@ -236,45 +253,40 @@ HTML_TEMPLATE = """
             }
         });
         
-        // NEW: Logic to leave a group
-        leaveGroupBtn.addEventListener('click', () => {
-            // Stop polling for messages
-            if (window._chatPoller) {
-                clearInterval(window._chatPoller);
+        // --- NEW: Image handling event listeners ---
+        imageUpload.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                selectedFile = file;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    imagePreview.src = e.target.result;
+                    imagePreviewContainer.classList.remove('hidden');
+                    messageInput.placeholder = "Image selected. Press send.";
+                    messageInput.disabled = true; 
+                };
+                reader.readAsDataURL(file);
             }
-            // Reset state
-            currentGroup = '';
-            groupPassInput.value = ''; // Clear password field for convenience
-            
-            // Hide chat screen and show group selection screen
-            chatScreen.classList.add('hidden');
-            chatScreen.classList.remove('flex');
-            groupScreen.classList.remove('hidden');
         });
+
+        cancelImage.addEventListener('click', () => {
+            selectedFile = null;
+            imageUpload.value = ''; // Clear the file input
+            imagePreviewContainer.classList.add('hidden');
+            messageInput.placeholder = "Type your message...";
+            messageInput.disabled = false;
+        });
+
 
         // --- Chat Logic ---
         function initializeChat() {
-            // Remove previous handlers (if any) to avoid double-binding
-            messageForm.removeEventListener('submit', handleFormSubmit);
-            messageForm.addEventListener('submit', handleFormSubmit);
-
-            emojiBtn.removeEventListener('click', toggleEmoji);
-            emojiBtn.addEventListener('click', toggleEmoji);
-
-            if (emojiPicker) {
-                emojiPicker.removeEventListener('emoji-click', onEmojiClick);
-                emojiPicker.addEventListener('emoji-click', onEmojiClick);
-            }
-
-            gifBtn.removeEventListener('click', openGifModal);
-            gifBtn.addEventListener('click', openGifModal);
-            gifModalClose.removeEventListener('click', () => gifModal.classList.add('hidden'));
-            gifModalClose.addEventListener('click', () => gifModal.classList.add('hidden'));
-
-            gifSearchInput.removeEventListener('keyup', onGifSearchKey);
-            gifSearchInput.addEventListener('keyup', onGifSearchKey);
-
-            // start polling for messages
+            messageForm.onsubmit = handleFormSubmit;
+            emojiBtn.onclick = toggleEmoji;
+            if (emojiPicker) emojiPicker.addEventListener('emoji-click', onEmojiClick);
+            gifBtn.onclick = openGifModal;
+            gifModalClose.onclick = () => gifModal.classList.add('hidden');
+            gifSearchInput.onkeyup = onGifSearchKey;
+            
             if (window._chatPoller) clearInterval(window._chatPoller);
             fetchMessages().then(scrollToBottom);
             window._chatPoller = setInterval(fetchMessages, 2000);
@@ -297,9 +309,8 @@ HTML_TEMPLATE = """
         }
 
         // --- Message Rendering ---
-        function isGifUrl(text) {
-            // Accept Tenor gif urls or any url that ends with common image/gif patterns:
-            return text.startsWith('https://media.tenor.com/') || text.includes('/media/') || text.endsWith('.gif') || text.includes('tenor.googleapis.com');
+        function isMediaUrl(text) {
+            return text.startsWith('data:image') || text.startsWith('https://media.tenor.com/') || text.includes('/media/') || text.endsWith('.gif') || text.includes('tenor.googleapis.com');
         }
 
         async function fetchMessages() {
@@ -319,13 +330,12 @@ HTML_TEMPLATE = """
                     messageElement.className = `flex flex-col ${isCurrentUser ? 'items-end' : 'items-start'}`;
                     
                     let messageContent;
-                    if (isGifUrl(msg.text)) {
-                        messageContent = `<img src="${msg.text}" alt="GIF" class="mt-1 rounded-lg max-w-full h-auto" style="max-height: 200px;">`;
+                    if (isMediaUrl(msg.text)) {
+                        messageContent = `<img src="${msg.text}" alt="Chat content" class="mt-1 rounded-lg max-w-full h-auto" style="max-height: 250px;">`;
                     } else {
-                        const textNode = document.createTextNode(msg.text);
                         const p = document.createElement('p');
                         p.className = "text-md break-words";
-                        p.appendChild(textNode);
+                        p.textContent = msg.text;
                         messageContent = p.outerHTML;
                     }
 
@@ -348,14 +358,21 @@ HTML_TEMPLATE = """
             }
         }
 
-        // --- Message Sending ---
-        function handleFormSubmit(event) {
+        // --- Message & Image Sending ---
+        async function handleFormSubmit(event) {
             event.preventDefault();
-            const text = messageInput.value.trim();
-            if (text !== '') {
-                sendMessage(text);
-                messageInput.value = '';
-                emojiPickerContainer.classList.add('hidden');
+            emojiPickerContainer.classList.add('hidden');
+
+            if (selectedFile) {
+                await sendImage(selectedFile);
+                // Reset after sending
+                cancelImage.click(); // Programmatically click cancel to reset UI
+            } else {
+                const text = messageInput.value.trim();
+                if (text !== '') {
+                    sendMessage(text);
+                    messageInput.value = '';
+                }
             }
         }
 
@@ -381,6 +398,30 @@ HTML_TEMPLATE = """
                 console.error('Error sending message:', error);
             }
         }
+        
+        // NEW: Function to upload the image file
+        async function sendImage(file) {
+            const formData = new FormData();
+            formData.append('image', file);
+            formData.append('username', username);
+            formData.append('group', currentGroup);
+
+            try {
+                const response = await fetch('/upload_image', {
+                    method: 'POST',
+                    body: formData
+                });
+                if (response.ok) {
+                    await fetchMessages();
+                    scrollToBottom();
+                } else {
+                    alert('Failed to upload image. Please try again.');
+                    console.error('Failed to send image');
+                }
+            } catch (error) {
+                console.error('Error sending image:', error);
+            }
+        }
 
         // --- GIF Modal Logic (Tenor) ---
         function openGifModal() {
@@ -390,7 +431,7 @@ HTML_TEMPLATE = """
             }
             gifModal.classList.remove('hidden');
             gifSearchInput.focus();
-            searchGifs('featured'); // Fetch featured GIFs on open
+            searchGifs('featured');
         }
 
         async function searchGifs(queryType = 'search') {
@@ -403,10 +444,7 @@ HTML_TEMPLATE = """
                 client_key: TENOR_CLIENT_KEY,
                 limit: 24,
             });
-
-            if (isSearching) {
-                params.append('q', query);
-            }
+            if (isSearching) params.append('q', query);
             
             gifResults.innerHTML = '<p class="text-center col-span-full">Loading...</p>';
 
@@ -416,18 +454,18 @@ HTML_TEMPLATE = """
                 const result = await response.json();
                 
                 gifResults.innerHTML = '';
-                // The structure of the Tenor response (v2) typically includes result.media_formats.gif.url
                 (result.results || []).forEach(gif => {
                     const gifItem = document.createElement('div');
                     gifItem.className = 'gif-item bg-gray-700 rounded-lg overflow-hidden';
-                    const url = gif?.media_formats?.gif?.url || (gif?.media && gif.media[0] && gif.media[0].gif && gif.media[0].gif.url) || '';
-                    const desc = gif?.content_description || gif?.id || 'GIF';
+                    const url = gif?.media_formats?.gif?.url || '';
+                    const desc = gif?.content_description || 'GIF';
+                    if (!url) return;
                     gifItem.innerHTML = `<img src="${url}" alt="${desc}" class="w-full h-full object-cover">`;
                     gifItem.onclick = () => selectGif(url);
                     gifResults.appendChild(gifItem);
                 });
             } catch (error) {
-                gifResults.innerHTML = `<p class="text-center col-span-full text-red-400">Failed to load GIFs. Error: ${error.message}</p>`;
+                gifResults.innerHTML = `<p class="text-center col-span-full text-red-400">Failed to load GIFs: ${error.message}</p>`;
                 console.error("Tenor API Error:", error);
             }
         }
@@ -469,7 +507,7 @@ def get_messages():
 
 @app.route('/messages', methods=['POST'])
 def post_message():
-    """Receives a new message and adds it to the group's list."""
+    """Receives a new text message and adds it to the group's list."""
     data = request.get_json()
     if not data or 'username' not in data or 'text' not in data or 'group' not in data:
         return jsonify({'status': 'error', 'message': 'Invalid data'}), 400
@@ -485,6 +523,44 @@ def post_message():
     }
     messages[group].append(message)
     return jsonify({'status': 'success'}), 201
+
+# --- NEW: Route for handling image uploads ---
+@app.route('/upload_image', methods=['POST'])
+def upload_image():
+    """Receives an uploaded image, encodes it to base64, and adds it as a message."""
+    if 'image' not in request.files:
+        return jsonify({'status': 'error', 'message': 'No image part'}), 400
+
+    file = request.files['image']
+    username = request.form.get('username')
+    group = request.form.get('group')
+
+    if not all([file, username, group]):
+        return jsonify({'status': 'error', 'message': 'Missing data'}), 400
+
+    if file.filename == '':
+        return jsonify({'status': 'error', 'message': 'No selected file'}), 400
+        
+    if group not in messages:
+        return jsonify({'status': 'error', 'message': 'Invalid group'}), 400
+
+    # Encode the image to a base64 data URL
+    try:
+        encoded_string = base64.b64encode(file.read()).decode('utf-8')
+        mime_type = file.content_type
+        image_data_url = f"data:{mime_type};base64,{encoded_string}"
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Could not process file: {e}'}), 500
+
+
+    message = {
+        'username': username,
+        'text': image_data_url,  # The text is now the image data URL
+        'timestamp': datetime.datetime.now().strftime('%H:%M')
+    }
+    messages[group].append(message)
+    return jsonify({'status': 'success'}), 201
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

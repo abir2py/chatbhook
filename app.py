@@ -8,22 +8,14 @@ import datetime
 app = Flask(__name__)
 
 # In-memory "database" to store messages.
-messages_by_group = {
-    'general': [{
-        'username': 'ChatBot',
-        'text': 'Welcome to general group!',
-        'timestamp': datetime.datetime.now().strftime('%H:%M')
-    }]
-}
+messages = []
 
-# Initialize messages with a welcome message in the default 'general' group
-messages_by_group = {
-    'general': [{
-        'username': 'ChatBot',
-        'text': 'bhook++',
-        'timestamp': datetime.datetime.now().strftime('%H:%M')
-    }]
-}
+# Add a welcome message
+messages.append({
+    'username': 'ChatBot',
+    'text': 'bhook++',
+    'timestamp': datetime.datetime.now().strftime('%H:%M')
+})
 
 # The HTML template for the chat frontend.
 HTML_TEMPLATE = """
@@ -57,8 +49,8 @@ HTML_TEMPLATE = """
             <h2 class="text-2xl font-bold mb-6 text-center text-blue-600 dark:text-blue-400">Join the Chat</h2>
             <form id="login-form">
                 <div class="mb-4">
-                    <label for="group-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Group name</label>
-                    <input type="text" id="group-input" class="w-full p-3 bg-gray-200 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required autocomplete="off">
+                    <label for="username-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Enter your username</label>
+                    <input type="text" id="username-input" class="w-full p-3 bg-gray-200 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required autocomplete="off">
                 </div>
                 <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300 shadow-md">Join Chat</button>
             </form>
@@ -104,7 +96,6 @@ HTML_TEMPLATE = """
     </div>
 
     <script>
-
         // --- Tenor API Configuration ---
         // IMPORTANT: Replace with your actual key from Google Cloud Console.
         const TENOR_API_KEY = ""; 
@@ -131,18 +122,15 @@ HTML_TEMPLATE = """
         const gifSearchInput = document.getElementById('gif-search-input');
         const gifResults = document.getElementById('gif-results');
         
-        let username = '';        
-        let group = '';
+        let username = '';
 
         // --- Login Logic ---
         loginForm.addEventListener('submit', (event) => {
             event.preventDefault();
             const enteredUsername = usernameInput.value.trim();
-            const enteredGroup = groupInput.value.trim() || 'general';
-            if (enteredUsername && enteredGroup) {
+            if (enteredUsername) {
                 username = enteredUsername;
-                group = enteredGroup;
-                welcomeMessage.textContent = `Welcome, ${username}! You're in "${group}" group.`;
+                welcomeMessage.textContent = `Welcome, ${username}!`;
                 loginScreen.classList.add('hidden');
                 chatScreen.classList.remove('hidden');
                 chatScreen.classList.add('flex');
@@ -177,7 +165,7 @@ HTML_TEMPLATE = """
 
         async function fetchMessages() {
             try {
-                const response = await fetch(`/messages?group=${encodeURIComponent(group)}`);
+                const response = await fetch('/messages');
                 if (!response.ok) throw new Error('Network response was not ok');
                 const messages = await response.json();
                 
@@ -232,7 +220,7 @@ HTML_TEMPLATE = """
         }
 
         async function sendMessage(text) {
-            const message = { username: username, text: text, group: group };
+            const message = { username: username, text: text };
             try {
                 const response = await fetch('/messages', {
                     method: 'POST',
@@ -316,25 +304,22 @@ def index():
 
 @app.route('/messages', methods=['GET'])
 def get_messages():
-    group = request.args.get('group', 'general')
-    return jsonify(messages_by_group.get(group, []))
+    """Returns all chat messages in JSON format."""
+    return jsonify(messages)
 
 @app.route('/messages', methods=['POST'])
 def post_message():
+    """Receives a new message and adds it to our list."""
     data = request.get_json()
-    if not data or 'username' not in data or 'text' not in data or 'group' not in data:
+    if not data or 'username' not in data or 'text' not in data:
         return jsonify({'status': 'error', 'message': 'Invalid data'}), 400
-
-    group = data['group']
-    if group not in messages_by_group:
-        messages_by_group[group] = []
 
     message = {
         'username': data['username'],
         'text': data['text'],
         'timestamp': datetime.datetime.now().strftime('%H:%M')
     }
-    messages_by_group[group].append(message)
+    messages.append(message)
     return jsonify({'status': 'success'}), 201
 
 if __name__ == '__main__':
